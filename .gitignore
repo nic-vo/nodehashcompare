@@ -1,1 +1,9 @@
+# Will be read by the tool but not tracked
 data
+output
+
+.vscode
+
+.yarn
+.pnp*
+yarn.lock
