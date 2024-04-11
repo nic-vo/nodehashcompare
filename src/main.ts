@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { Hash, createHash } from 'crypto';
+import { createHash } from 'crypto';
 import { createInterface } from 'readline';
 
 /*
@@ -137,10 +137,6 @@ type DuplicateEntry = {
 		gif: { total: 0, duplicates: 0 },
 	};
 	for (const subdir of dirList) {
-		if (subdir === 'output') {
-			console.log('\n\n**** reached output dir, skipping ***\n\n');
-			continue;
-		}
 		console.log('scanning', subdir);
 		const subDirPath = path.join(dirPath, subdir);
 		const subDirContents = await fs.readdir(subDirPath);
@@ -206,14 +202,30 @@ type DuplicateEntry = {
 	console.log('# of webms:', tracking.webm.total);
 	console.log('# of gifs:', tracking.gif.total);
 	console.log('Failed / unknown:', tracking.unknown.total);
-	console.log('\nWriting to output...');
+	console.log('\nLogging; moving files to output...');
 
-	const outputPath = path.join(dirPath, 'output');
+	const stamp = Date.now();
+	const outputPath = path.join(
+		dirPath.split('\\').slice(0, -1).join('\\'),
+		'output',
+		stamp.toString(),
+	);
 	await fs.mkdir(outputPath, { recursive: true });
 	await fs.writeFile(
-		path.join(outputPath, `${Date.now()}.json`),
+		path.join(outputPath, `log.json`),
 		JSON.stringify({ counts: tracking, duplicates }),
 	);
+	for (const [subdir, pairs] of Object.entries(duplicates)) {
+		await fs.mkdir(path.join(outputPath, subdir), { recursive: true });
+		for (const pair of pairs) {
+			const deletePath = path.join(dirPath, subdir, pair.duplicate.file);
+			const createPath = path.join(outputPath, subdir, pair.duplicate.file);
+			const copy = await fs.readFile(deletePath);
+			await fs.writeFile(createPath, copy);
+			await fs.rm(deletePath);
+		}
+	}
+
 	console.log('\n*** DONE ***\n\n');
 	process.exit();
 })();
