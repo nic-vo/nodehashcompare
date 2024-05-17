@@ -91,6 +91,15 @@ function askQuestion() {
 	});
 }
 
+function askFlag() {
+	return new Promise<string | ''>((res) => {
+		rl.question(
+			'\n\nDo you want to check for mistakenly placed files? leave blank if no: ',
+			(answer) => res(answer),
+		);
+	});
+}
+
 type HashedEntry = {
 	subdir: string;
 	file: string;
@@ -104,6 +113,7 @@ type DuplicateEntry = {
 (async () => {
 	let dirPath: string | null = null;
 	let dirList: string[] | null = null;
+	let mistakeFlag = false;
 	while (!dirList || !dirPath) {
 		let inputPath = await askQuestion();
 		switch (inputPath) {
@@ -125,6 +135,8 @@ type DuplicateEntry = {
 		} catch {}
 	}
 
+	mistakeFlag = (await askFlag()) === '' ? false : true;
+
 	console.log('\n\nrunning...\n\n');
 
 	const hashes = new Map<string, HashedEntry>();
@@ -138,9 +150,25 @@ type DuplicateEntry = {
 	};
 	for (const subdir of dirList) {
 		console.log('scanning', subdir);
+		const subdirHashes = new Map<string, HashedEntry>();
+		const hashesFile = 'hashes.json';
 		const subDirPath = path.join(dirPath, subdir);
 		const subDirContents = await fs.readdir(subDirPath);
+		if (new Set(subDirContents).has(hashesFile)) {
+			console.log(subdir, 'has existing hashes');
+			const existingHashes = JSON.parse(
+				await fs.readFile(path.join(subDirPath, hashesFile), {
+					encoding: 'utf-8',
+				}),
+			) as Record<string, HashedEntry>;
+			for (const [key, value] of Object.entries(existingHashes)) {
+				hashes.set(key, value);
+				subdirHashes.set(key, value);
+			}
+			if (!mistakeFlag) continue;
+		}
 		for (const file of subDirContents) {
+			if (file === 'hashes.json') continue;
 			const filePath = path.join(subDirPath, file);
 			const fileHandle = await fs.open(filePath, 'r');
 			const buffer = Buffer.alloc(3);
@@ -148,36 +176,57 @@ type DuplicateEntry = {
 			if (buffer[0] === 0xff && buffer[1] === 0xd8) {
 				tracking.jpeg.total += 1;
 				const hash = await hashJpeg(fileHandle);
-				if (hashes.has(hash)) {
-					const original = hashes.get(hash) as HashedEntry;
-					const newDuplicate = { original, duplicate: { subdir, file } };
-					duplicates[subdir] = duplicates[subdir]
-						? [...duplicates[subdir], newDuplicate]
-						: [newDuplicate];
-					tracking.jpeg.duplicates += 1;
-				} else hashes.set(hash, { subdir, file });
+				if (subdirHashes.get(hash)) continue;
+				const maybeInHashes = hashes.get(hash);
+				if (!maybeInHashes) {
+					hashes.set(hash, { subdir, file });
+					subdirHashes.set(hash, { subdir, file });
+					continue;
+				}
+				const newDuplicate = {
+					original: maybeInHashes,
+					duplicate: { subdir, file },
+				};
+				duplicates[subdir] = duplicates[subdir]
+					? [...duplicates[subdir], newDuplicate]
+					: [newDuplicate];
+				tracking.jpeg.duplicates += 1;
 			} else if (buffer[0] === 0x89 && buffer[1] === 0x50) {
 				tracking.png.total += 1;
 				const hash = await hashPng(fileHandle);
-				if (hashes.has(hash)) {
-					const original = hashes.get(hash) as HashedEntry;
-					const newDuplicate = { original, duplicate: { subdir, file } };
-					duplicates[subdir] = duplicates[subdir]
-						? [...duplicates[subdir], newDuplicate]
-						: [newDuplicate];
-					tracking.png.duplicates += 1;
-				} else hashes.set(hash, { subdir, file });
+				if (subdirHashes.get(hash)) continue;
+				const maybeInHashes = hashes.get(hash);
+				if (!maybeInHashes) {
+					hashes.set(hash, { subdir, file });
+					subdirHashes.set(hash, { subdir, file });
+					continue;
+				}
+				const newDuplicate = {
+					original: maybeInHashes,
+					duplicate: { subdir, file },
+				};
+				duplicates[subdir] = duplicates[subdir]
+					? [...duplicates[subdir], newDuplicate]
+					: [newDuplicate];
+				tracking.png.duplicates += 1;
 			} else if (buffer[0] === 0x1a && buffer[1] === 0x45) {
 				tracking.webm.total += 1;
-				const sizeHash = (await fileHandle.stat()).size.toString();
-				if (hashes.has(sizeHash)) {
-					const original = hashes.get(sizeHash) as HashedEntry;
-					const newDuplicate = { original, duplicate: { subdir, file } };
-					duplicates[subdir] = duplicates[subdir]
-						? [...duplicates[subdir], newDuplicate]
-						: [newDuplicate];
-					tracking.webm.duplicates += 1;
-				} else hashes.set(sizeHash, { subdir, file });
+				const hash = (await fileHandle.stat()).size.toString();
+				if (subdirHashes.get(hash)) continue;
+				const maybeInHashes = hashes.get(hash);
+				if (!maybeInHashes) {
+					hashes.set(hash, { subdir, file });
+					subdirHashes.set(hash, { subdir, file });
+					continue;
+				}
+				const newDuplicate = {
+					original: maybeInHashes,
+					duplicate: { subdir, file },
+				};
+				duplicates[subdir] = duplicates[subdir]
+					? [...duplicates[subdir], newDuplicate]
+					: [newDuplicate];
+				tracking.webm.duplicates += 1;
 			} else if (
 				buffer[0] === 0x47 &&
 				buffer[1] === 0x49 &&
@@ -190,6 +239,11 @@ type DuplicateEntry = {
 				tracking.unknown.total += 1;
 			}
 		}
+		console.log('writing', subdir, 'hashes');
+		await fs.writeFile(
+			path.join(subDirPath, 'hashes.json'),
+			JSON.stringify(Object.fromEntries(subdirHashes.entries())),
+		);
 	}
 	const totalDuplicates = Object.values(duplicates).reduce(
 		(sum, current) => (sum += current.length),
